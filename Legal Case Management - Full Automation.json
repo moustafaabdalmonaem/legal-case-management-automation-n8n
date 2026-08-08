@@ -1,0 +1,374 @@
+{
+  "name": "Legal Case Management - Full Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily at 8 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 120]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "REPLACE_WITH_YOUR_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Cases"
+        },
+        "options": {}
+      },
+      "id": "read-sheet",
+      "name": "Read Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [440, 120],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter rows: active cases, hearing is tomorrow, not yet alerted\nconst items = $input.all();\nconst today = new Date();\ntoday.setHours(0,0,0,0);\nconst tomorrow = new Date(today);\ntomorrow.setDate(today.getDate() + 1);\nconst tomorrowStr = tomorrow.toISOString().slice(0,10);\n\nconst filtered = items.filter(item => {\n  const status = (item.json['status'] || '').trim().toLowerCase();\n  const nextDate = (item.json['next_hearing_date'] || '').toString().slice(0,10);\n  const alerted = (item.json['alert_sent'] || '').trim().toLowerCase();\n  return status === 'active' && nextDate === tomorrowStr && alerted !== 'yes';\n});\n\nreturn filtered;"
+      },
+      "id": "filter-code",
+      "name": "Filter Due Cases",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 120]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Process Each Case",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [880, 120]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_YOUR_EMAIL@gmail.com",
+        "subject": "=Reminder: Hearing Tomorrow - Case {{ $json['case_number'] }}",
+        "message": "=Hearing reminder for tomorrow:\n\nCase Number: {{ $json['case_number'] }}\nClient/Opponent: {{ $json['client_name'] }}\nCase Type: {{ $json['case_type'] }}\nCourt: {{ $json['court'] }}\nHearing Date: {{ $json['next_hearing_date'] }}\nResponsible Lawyer: {{ $json['lawyer'] }}\nNotes: {{ $json['notes'] }}",
+        "options": {}
+      },
+      "id": "send-gmail",
+      "name": "Send Reminder Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1100, 40],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "REPLACE_WITH_YOUR_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Cases"
+        },
+        "columnToMatchOn": "case_number",
+        "valueToMatchOn": "={{ $json['case_number'] }}",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "alert_sent",
+              "fieldValue": "Yes"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "update-sheet",
+      "name": "Update Alert Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1320, 40],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "updates": ["message"]
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Photo Received",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 460],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Telegram sends multiple photo sizes; pick the largest (last item)\nconst message = $input.first().json.message;\nif (!message || !message.photo || message.photo.length === 0) {\n  throw new Error('No photo found in this message. Please send a photo of the document.');\n}\nconst largest = message.photo[message.photo.length - 1];\nreturn [{ json: { file_id: largest.file_id, chat_id: message.chat.id } }];"
+      },
+      "id": "get-photo-id",
+      "name": "Get Largest Photo ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 460]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.file_id }}"
+      },
+      "id": "download-photo",
+      "name": "Download Photo",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [660, 460],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convert downloaded binary image to base64 for the vision API\nconst binary = $input.first().binary.data;\nconst base64 = binary.data;\nconst mimeType = binary.mimeType || 'image/jpeg';\nreturn [{\n  json: {\n    base64Image: base64,\n    mimeType: mimeType,\n    chat_id: $('Get Largest Photo ID').first().json.chat_id\n  }\n}];"
+      },
+      "id": "to-base64",
+      "name": "Convert to Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"gpt-4o\",\n  messages: [\n    {\n      role: \"system\",\n      content: \"You extract legal case data from photographed documents. Return ONLY a valid JSON object with these exact keys: case_number, client_name, case_type, court, next_hearing_date (format YYYY-MM-DD, empty string if not found), lawyer, notes. No extra text, no markdown formatting.\"\n    },\n    {\n      role: \"user\",\n      content: [\n        { type: \"text\", text: \"Extract the case data from this document image.\" },\n        { type: \"image_url\", image_url: { url: \"data:\" + $json.mimeType + \";base64,\" + $json.base64Image } }\n      ]\n    }\n  ],\n  max_tokens: 500\n}) }}",
+        "options": {}
+      },
+      "id": "ai-extract",
+      "name": "AI Extract Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 460],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the AI's JSON response, with basic error handling\nconst raw = $input.first().json.choices[0].message.content;\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json|```/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error('Could not parse AI response as JSON: ' + raw);\n}\nparsed.status = 'Active';\nparsed.alert_sent = 'No';\nparsed.chat_id = $('Convert to Base64').first().json.chat_id;\nreturn [{ json: parsed }];"
+      },
+      "id": "parse-ai",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 460]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "REPLACE_WITH_YOUR_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Cases"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "append-sheet",
+      "name": "Append Case Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1540, 460],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "REPLACE_WITH_YOUR_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Cases"
+        },
+        "options": {}
+      },
+      "id": "read-all-active",
+      "name": "Read All Active Cases",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1760, 460],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a quick summary: total active cases + cases due in the next 7 days\nconst items = $input.all();\nconst today = new Date();\ntoday.setHours(0,0,0,0);\nconst weekAhead = new Date(today);\nweekAhead.setDate(today.getDate() + 7);\n\nconst active = items.filter(i => (i.json.status || '').toLowerCase() === 'active');\nconst dueThisWeek = active.filter(i => {\n  const d = new Date(i.json.next_hearing_date);\n  return d >= today && d <= weekAhead;\n});\n\nconst newCase = $('Parse AI Response').first().json;\n\nreturn [{\n  json: {\n    chat_id: newCase.chat_id,\n    newCase,\n    totalActive: active.length,\n    dueThisWeekCount: dueThisWeek.length,\n    dueThisWeekList: dueThisWeek.map(i => `${i.json.case_number} - ${i.json.next_hearing_date}`).join('\\n')\n  }\n}];"
+      },
+      "id": "analyze",
+      "name": "Analyze Caseload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 460]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_MANAGER_EMAIL@example.com",
+        "subject": "=New Case Logged: {{ $json.newCase.case_number }}",
+        "message": "=A new case was added via photo intake:\n\nCase Number: {{ $json.newCase.case_number }}\nClient/Opponent: {{ $json.newCase.client_name }}\nCase Type: {{ $json.newCase.case_type }}\nCourt: {{ $json.newCase.court }}\nNext Hearing: {{ $json.newCase.next_hearing_date }}\nLawyer: {{ $json.newCase.lawyer }}\nNotes: {{ $json.newCase.notes }}\n\n--- Caseload Summary ---\nTotal Active Cases: {{ $json.totalActive }}\nHearings in Next 7 Days: {{ $json.dueThisWeekCount }}\n{{ $json.dueThisWeekList }}",
+        "options": {}
+      },
+      "id": "send-manager-email",
+      "name": "Email Summary to Manager",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2200, 380],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=Got it! Case {{ $json.newCase.case_number }} has been saved and the manager has been notified.",
+        "additionalFields": {}
+      },
+      "id": "confirm-telegram",
+      "name": "Confirm to Employee",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2200, 540],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily at 8 AM": {
+      "main": [[{ "node": "Read Sheet", "type": "main", "index": 0 }]]
+    },
+    "Read Sheet": {
+      "main": [[{ "node": "Filter Due Cases", "type": "main", "index": 0 }]]
+    },
+    "Filter Due Cases": {
+      "main": [[{ "node": "Process Each Case", "type": "main", "index": 0 }]]
+    },
+    "Process Each Case": {
+      "main": [
+        [],
+        [{ "node": "Send Reminder Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Reminder Email": {
+      "main": [[{ "node": "Update Alert Status", "type": "main", "index": 0 }]]
+    },
+    "Update Alert Status": {
+      "main": [[{ "node": "Process Each Case", "type": "main", "index": 0 }]]
+    },
+    "Telegram Photo Received": {
+      "main": [[{ "node": "Get Largest Photo ID", "type": "main", "index": 0 }]]
+    },
+    "Get Largest Photo ID": {
+      "main": [[{ "node": "Download Photo", "type": "main", "index": 0 }]]
+    },
+    "Download Photo": {
+      "main": [[{ "node": "Convert to Base64", "type": "main", "index": 0 }]]
+    },
+    "Convert to Base64": {
+      "main": [[{ "node": "AI Extract Data", "type": "main", "index": 0 }]]
+    },
+    "AI Extract Data": {
+      "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]]
+    },
+    "Parse AI Response": {
+      "main": [[{ "node": "Append Case Data", "type": "main", "index": 0 }]]
+    },
+    "Append Case Data": {
+      "main": [[{ "node": "Read All Active Cases", "type": "main", "index": 0 }]]
+    },
+    "Read All Active Cases": {
+      "main": [[{ "node": "Analyze Caseload", "type": "main", "index": 0 }]]
+    },
+    "Analyze Caseload": {
+      "main": [
+        [
+          { "node": "Email Summary to Manager", "type": "main", "index": 0 },
+          { "node": "Confirm to Employee", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "pinData": {}
+}
